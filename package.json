@@ -1,10 +1,14 @@
 {
-  "name": "hardhat-project",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "hardhat": "^2.22.19"
+    "@nomicfoundation/hardhat-ethers": "^3.0.0",
+    "hardhat": "^2.22.2",
+    "ts-node": "^10.9.2",
+    "@types/mocha": "^10.0.6",
+    "@types/chai": "^4.3.14"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^5.2.0",
+    "@openzeppelin/contracts": "^5.0.2",
+    "ethers": "^5.7.2"
   }
 }

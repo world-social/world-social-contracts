@@ -1,114 +1,181 @@
-import  hre  from "hardhat";
 import { expect } from "chai";
-import { WorldSocialToken } from "../typechain-types";
+import { ethers } from "hardhat";
+import { BigNumber } from "ethers";
+import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 
-describe("WorldSocialToken", function () {
-  let token: WorldSocialToken;
-  let owner: any, addr1: any, addr2: any;
+describe("WST Contract", function () {
+    let wst: any;
+    let owner: SignerWithAddress;
+    let backendSigner: SignerWithAddress;
+    let user: SignerWithAddress;
+    let worldID: any;
+    
+    const appId = "test_app";
+    const actionId = "test_action";
+    const defaultAmountPerMint = ethers.utils.parseEther("10");
+    const defaultWaitBetweenMints = 3600; // 1 hour
 
-  beforeEach(async function () {
-    [owner, addr1, addr2] = await hre.ethers.getSigners();
-    const TokenFactory = await hre.ethers.getContractFactory("WorldSocialToken");
-    token = (await TokenFactory.deploy()) as WorldSocialToken;
-    await token.waitForDeployment();
-  });
+    // Mock World ID proof parameters
+    const mockProof = new Array(8).fill(BigNumber.from(1));
+    const mockRoot = BigNumber.from(123456);
+    const mockNullifierHash = BigNumber.from(789012);
 
-  it("should deploy with the correct initial supply", async function () {
-    const totalSupply = await token.totalSupply();
-    const ownerBalance = await token.balanceOf(owner.address);
-    expect(totalSupply).to.equal(ownerBalance);
-  });
+    beforeEach(async function () {
+        // Get signers
+        [owner, backendSigner, user] = await ethers.getSigners();
 
-  it("should allow owner to register a creator", async function () {
-    await token.registerCreator(addr1.address);
-    const isCreator = await token.isContentCreator(addr1.address);
-    expect(isCreator).to.be.true;
-  });
+        // Deploy mock World ID contract
+        const MockWorldID = await ethers.getContractFactory("MockWorldID");
+        worldID = await MockWorldID.deploy();
 
-  it("should revert if non-owner tries to register a creator", async function () {
-    await expect(
-      token.connect(addr1).registerCreator(addr2.address)
-    ).to.be.revertedWith("Ownable: caller is not the owner");
-  });
+        // Deploy WST Contract
+        const WST = await ethers.getContractFactory("WST");
+        wst = await WST.deploy(
+            owner.address,
+            backendSigner.address,
+            worldID.address,
+            appId,
+            actionId,
+            defaultAmountPerMint,
+            defaultWaitBetweenMints
+        );
+    });
 
-  it("should reward a registered creator correctly", async function () {
-    // Register addr1 as a content creator
-    await token.registerCreator(addr1.address);
+    describe("Deployment", function () {
+        it("Should set the correct initial parameters", async function () {
+            expect(await wst.owner()).to.equal(owner.address);
+            expect(await wst.backendSigner()).to.equal(backendSigner.address);
+            expect(await wst.amountPerMint()).to.equal(defaultAmountPerMint);
+            expect(await wst.waitBetweenMints()).to.equal(defaultWaitBetweenMints);
+        });
+    });
 
-    // Reward creator with an amount
-    const rewardAmount = utils.parseEther("100"); // 100 tokens
-    await token.rewardCreator(addr1.address, rewardAmount);
+    describe("Minting", function () {
+        let signature: string;
+        
+        beforeEach(async function () {
+            // Create signature from backend signer
+            const messageHash = ethers.utils.solidityKeccak256(
+                ["address", "uint256"],
+                [user.address, mockNullifierHash]
+            );
+            const ethSignedHash = ethers.utils.arrayify(
+                ethers.utils.hashMessage(ethers.utils.arrayify(messageHash))
+            );
+            signature = await backendSigner.signMessage(ethSignedHash);
+        });
 
-    // Expect the reward to be 70% of the provided amount
-    const expectedReward = rewardAmount.mul(70).div(100);
-    const creatorReward = await token.creatorRewards(addr1.address);
-    expect(creatorReward).to.equal(expectedReward);
+        it("Should allow minting with valid proof and signature", async function () {
+            // First, create a mock method to simulate World ID proof verification
+            await worldID.setMockVerifyProof(true);
 
-    // Check that addr1's balance increased accordingly
-    const addr1Balance = await token.balanceOf(addr1.address);
-    expect(addr1Balance).to.equal(expectedReward);
-  });
+            const initialBalance = await wst.balanceOf(user.address);
+            
+            await expect(
+                wst.connect(user).mint(
+                    mockRoot,
+                    mockNullifierHash,
+                    mockProof,
+                    signature
+                )
+            ).to.emit(wst, "Minted")
+            .withArgs(user.address, defaultAmountPerMint);
 
-  it("should reward a viewer correctly", async function () {
-    const rewardAmount = utils.parseEther("100"); // 100 tokens
-    await token.rewardViewer(addr2.address, rewardAmount);
+            const finalBalance = await wst.balanceOf(user.address);
+            expect(finalBalance).to.equal(initialBalance.add(defaultAmountPerMint));
+        });
 
-    // Expect the viewer reward to be 30% of the provided amount
-    const expectedReward = rewardAmount.mul(30).div(100);
-    const viewerReward = await token.viewerRewards(addr2.address);
-    expect(viewerReward).to.equal(expectedReward);
+        it("Should revert if not enough time has passed between mints", async function () {
+            // First, create a mock method to simulate World ID proof verification
+            await worldID.setMockVerifyProof(true);
 
-    // Check that addr2's balance increased accordingly
-    const addr2Balance = await token.balanceOf(addr2.address);
-    expect(addr2Balance).to.equal(expectedReward);
-  });
+            // First mint
+            await wst.connect(user).mint(
+                mockRoot,
+                mockNullifierHash,
+                mockProof,
+                signature
+            );
 
-  // Example: A basic check for permit functionality.
-  // Testing permit fully requires generating a valid signature off-chain.
-  // This test is just a skeleton to illustrate how you might start testing ERC20Permit.
-  it("should allow a permit approval (skeleton test)", async function () {
-    // The permit function allows a spender to be approved by a signature.
-    // Here, we will build a permit message for addr1 approving addr2 to spend tokens on its behalf.
-    const value = utils.parseEther("10");
-    const nonce = await token.nonces(addr1.address);
-    const deadline = constants.MaxUint256;
+            // Try to mint again immediately
+            await expect(
+                wst.connect(user).mint(
+                    mockRoot,
+                    mockNullifierHash,
+                    mockProof,
+                    signature
+                )
+            ).to.be.revertedWith("WST__NotEnoughTimeHasPassed");
+        });
 
-    // EIP-2612 domain separator and struct hash must be calculated.
-    // For a full test, use ethers.js _signTypedData functionality:
-    const domain = {
-      name: "WorldSocial Token",
-      version: "1",
-      chainId: (await hre.ethers.provider.getNetwork()).chainId,
-      verifyingContract: (token as any).address,
-    };
+        it("Should revert with invalid signature", async function () {
+            // Use a different signer for signature
+            const [,,,wrongSigner] = await ethers.getSigners();
+            const messageHash = ethers.utils.solidityKeccak256(
+                ["address", "uint256"],
+                [user.address, mockNullifierHash]
+            );
+            const ethSignedHash = ethers.utils.arrayify(
+                ethers.utils.hashMessage(ethers.utils.arrayify(messageHash))
+            );
+            const wrongSignature = await wrongSigner.signMessage(ethSignedHash);
 
-    const types = {
-      Permit: [
-        { name: "owner", type: "address" },
-        { name: "spender", type: "address" },
-        { name: "value", type: "uint256" },
-        { name: "nonce", type: "uint256" },
-        { name: "deadline", type: "uint256" },
-      ],
-    };
+            await expect(
+                wst.connect(user).mint(
+                    mockRoot,
+                    mockNullifierHash,
+                    mockProof,
+                    wrongSignature
+                )
+            ).to.be.revertedWith("WST__InvalidSignature");
+        });
+    });
 
-    const message = {
-      owner: addr1.address,
-      spender: addr2.address,
-      value,
-      nonce: Number(nonce),
-      deadline,
-    };
+    describe("Owner Functions", function () {
+        it("Should allow owner to update backend signer", async function () {
+            const [,,,newSigner] = await ethers.getSigners();
 
-    // Sign the permit message with addr1's signer
-    const signature = await addr1._signTypedData(domain, types, message);
-    const { v, r, s } = utils.splitSignature(signature);
+            await expect(wst.connect(owner).setBackendSigner(newSigner.address))
+                .to.emit(wst, "BackendSignerUpdated")
+                .withArgs(backendSigner.address, newSigner.address);
 
-    // Now call the permit function from any account (we'll use addr2)
-    await token.connect(addr2).permit(addr1.address, addr2.address, value, deadline, v, r, s);
+            expect(await wst.backendSigner()).to.equal(newSigner.address);
+        });
 
-    // Verify that allowance was set correctly
-    const allowance = await token.allowance(addr1.address, addr2.address);
-    expect(allowance).to.equal(value);
-  });
+        it("Should allow owner to update amount per mint", async function () {
+            const newAmount = ethers.utils.parseEther("20");
+
+            await expect(wst.connect(owner).setAmountPerMint(newAmount))
+                .to.emit(wst, "AmountPerMintUpdated")
+                .withArgs(defaultAmountPerMint, newAmount);
+
+            expect(await wst.amountPerMint()).to.equal(newAmount);
+        });
+
+        it("Should allow owner to update wait between mints", async function () {
+            const newWaitTime = 7200; // 2 hours
+
+            await expect(wst.connect(owner).setWaitBetweenMints(newWaitTime))
+                .to.emit(wst, "WaitBetweenMintsUpdated")
+                .withArgs(defaultWaitBetweenMints, newWaitTime);
+
+            expect(await wst.waitBetweenMints()).to.equal(newWaitTime);
+        });
+
+        it("Should revert if non-owner tries to update parameters", async function () {
+            const [,,,newSigner] = await ethers.getSigners();
+
+            await expect(
+                wst.connect(user).setBackendSigner(newSigner.address)
+            ).to.be.revertedWith("Ownable: caller is not the owner");
+
+            await expect(
+                wst.connect(user).setAmountPerMint(ethers.utils.parseEther("20"))
+            ).to.be.revertedWith("Ownable: caller is not the owner");
+
+            await expect(
+                wst.connect(user).setWaitBetweenMints(7200)
+            ).to.be.revertedWith("Ownable: caller is not the owner");
+        });
+    });
 });
